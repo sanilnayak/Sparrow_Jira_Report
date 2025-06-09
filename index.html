@@ -1,0 +1,133 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Interactive Sales Performance Dashboard</title>
+  <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; padding: 0; background: #f0f2f5; }
+    header { background: #004d99; color: white; padding: 1rem 2rem; font-size: 1.5rem; }
+    .container { display: flex; flex-wrap: wrap; padding: 1rem; gap: 1rem; }
+    .panel { background: white; border-radius: 8px; padding: 1rem; box-shadow: 0 0 10px rgba(0,0,0,0.1); flex: 1 1 45%; }
+    .full-width { flex: 1 1 100%; }
+    .upload-area { margin: 1rem 0; }
+    .filters { margin-bottom: 1rem; }
+    label { display: inline-block; margin-right: 0.5rem; font-weight: bold; }
+    select { margin-right: 1rem; }
+  </style>
+</head>
+<body>
+  <header>Sparrow - Interactive Sales Performance Dashboard</header>
+  <div class="container">
+    <div class="full-width upload-area">
+      <label for="upload">Upload JSON file:</label>
+      <input type="file" id="upload" accept=".json"/>
+    </div>
+    <div class="full-width filters">
+      <label for="sprintFilter">Sprint:</label>
+      <select id="sprintFilter"></select>
+      <label for="devFilter">Developer:</label>
+      <select id="devFilter"></select>
+    </div>
+    <div id="ticketPR" class="panel"></div>
+    <div id="timeTaken" class="panel"></div>
+    <div id="timeSheetVsTicket" class="panel"></div>
+    <div id="bugsSpillovers" class="panel"></div>
+    <div id="qaTickets" class="panel"></div>
+  </div>
+
+  <script>
+    let rawData = [];
+    document.getElementById('upload').addEventListener('change', function(evt) {
+      const file = evt.target.files[0];
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        rawData = JSON.parse(e.target.result);
+        populateFilters(rawData);
+        renderDashboard(rawData);
+      };
+      reader.readAsText(file);
+    });
+
+    function populateFilters(data) {
+      const sprintSet = new Set();
+      const devSet = new Set();
+      data.forEach(d => {
+        if (d.Sprint) sprintSet.add(d.Sprint);
+        if (d["Developer Allocated"]) devSet.add(d["Developer Allocated"]);
+      });
+
+      const sprintFilter = document.getElementById('sprintFilter');
+      sprintFilter.innerHTML = '<option value="">All</option>' + Array.from(sprintSet).map(s => `<option value="${s}">${s}</option>`).join('');
+
+      const devFilter = document.getElementById('devFilter');
+      devFilter.innerHTML = '<option value="">All</option>' + Array.from(devSet).map(d => `<option value="${d}">${d}</option>`).join('');
+
+      sprintFilter.onchange = devFilter.onchange = () => renderDashboard(data);
+    }
+
+    function renderDashboard(data) {
+      const sprint = document.getElementById('sprintFilter').value;
+      const developer = document.getElementById('devFilter').value;
+
+      const filtered = data.filter(d =>
+        (sprint ? d.Sprint === sprint : true) &&
+        (developer ? d["Developer Allocated"] === developer : true)
+      );
+
+      // 1. Ticket PR Count Chart
+      const devs = [...new Set(filtered.map(d => d["Developer Allocated"]))];
+      const tickets = devs.map(dev => filtered.filter(d => d["Developer Allocated"] === dev).length);
+      const pulls = devs.map(dev => filtered.filter(d => d["Developer Allocated"] === dev).reduce((a, b) => a + (b["Number of Pull Requests"] || 0), 0));
+
+      Plotly.newPlot('ticketPR', [{
+        x: devs, y: tickets, type: 'bar', name: 'Tickets'
+      }, {
+        x: devs, y: pulls, type: 'bar', name: 'Pull Requests'
+      }], { title: 'Tickets and PRs by Developer' });
+
+      // 2. Time Taken Chart (Ticket Movements)
+      const storyPoints = devs.map(dev => filtered.filter(d => d["Developer Allocated"] === dev).reduce((a, b) => a + (b["Story Points"] || 0), 0));
+      const ticketMoves = devs.map(dev => filtered.filter(d => d["Developer Allocated"] === dev).reduce((a, b) => a + (b["Dev KPI (Ticket Movements) in Days"] || 0), 0));
+
+      Plotly.newPlot('timeTaken', [{
+        x: devs, y: storyPoints, type: 'bar', name: 'Story Points'
+      }, {
+        x: devs, y: ticketMoves, type: 'bar', name: 'Ticket Movement (days)'
+      }], { title: 'Time Taken by Developers (Ticket Movements)' });
+
+      // 3. Time Sheet vs Ticket Movement Chart
+      const timesheet = devs.map(dev => filtered.filter(d => d["Developer Allocated"] === dev).reduce((a, b) => a + (parseFloat(b["Dev KPI (Timesheet)"]) || 0), 0));
+      Plotly.newPlot('timeSheetVsTicket', [{
+        x: devs, y: timesheet, type: 'bar', name: 'Timesheet (hrs)'
+      }, {
+        x: devs, y: ticketMoves, type: 'bar', name: 'Ticket Movement (days)'
+      }], { title: 'Timesheet vs Ticket Movement by Developer' });
+
+      // 4. Bugs and Spillovers
+      const spillovers = devs.map(dev => filtered.filter(d => d["Developer Allocated"] === dev && d["Spillover Data"] === "Yes").length);
+      const bugs = devs.map(dev => filtered.filter(d => d["Developer Allocated"] === dev).reduce((a, b) => a + (parseInt(b["Bug Count"]) || 0), 0));
+      Plotly.newPlot('bugsSpillovers', [{
+        x: devs, y: spillovers, type: 'bar', name: 'Spillovers'
+      }, {
+        x: devs, y: bugs, type: 'bar', name: 'Bugs'
+      }], { title: 'Spillovers and Bugs by Developer' });
+
+      // 5. QA Tickets Pie
+      const qaData = {};
+      filtered.forEach(d => {
+        const qa = d["QA Allocated"] || "unassigned";
+        if (!qaData[qa]) qaData[qa] = 0;
+        qaData[qa] += 1;
+      });
+      Plotly.newPlot('qaTickets', [{
+        labels: Object.keys(qaData),
+        values: Object.values(qaData),
+        type: 'pie'
+      }], { title: 'QA Ticket Distribution' });
+    }
+  </script>
+</body>
+</html>
